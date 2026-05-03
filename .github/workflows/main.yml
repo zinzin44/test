@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: فك التشفير والتحقق من الهوية
+      - name: فك التشفير والتحقق
         shell: pwsh
         run: |
           function Decode-Quad ($inputString) {
@@ -23,19 +23,13 @@ jobs:
               }
               return $current
           }
-          try {
-              $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
-              $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
-              # تحقق من السيكرت الخاص بك
-              if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
-                  Write-Host "✅ تم التحقق" -ForegroundColor Green
-                  echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
-              } else {
-                  Write-Host "❌ خطأ في المفتاح" -ForegroundColor Red ; exit 1
-              }
-          } catch { Write-Host "❌ فشل فك التشفير" ; exit 1 }
+          $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
+          $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
+          if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
+              echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
+          } else { exit 1 }
 
-      - name: تحميل وتفعيل RDP
+      - name: تحميل Cloudflared وإعداد RDP
         run: |
           curl -L --output cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
@@ -49,43 +43,39 @@ jobs:
           net user $name $pass /add
           net localgroup administrators $name /add
 
-      - name: تشغيل النفق وتشفير الرابط (الآلية المضمونة)
+      - name: استخراج وتشفير الرابط (طريقة مضمونة 100%)
         shell: pwsh
         run: |
-          # تشغيل النفق وتوجيه المخرجات لملف مؤقت
-          Start-Process ./cloudflared.exe -ArgumentList "tunnel --url rdp://localhost:3389 --protocol http2" -RedirectStandardError "out.txt"
+          # تشغيل النفق كعملية خلفية (مثل كودك الناجح)
+          Start-Process ./cloudflared.exe -ArgumentList "tunnel --url rdp://localhost:3389"
           
-          Write-Host "جاري استخراج الرابط وتشفيره..." -ForegroundColor Cyan
-          $raw_url = ""
-          # الانتظار حتى يظهر الرابط في الملف
-          for ($i = 0; $i -lt 20; $i++) {
-              Start-Sleep -Seconds 5
-              if (Test-Path "out.txt") {
-                  $raw_url = Get-Content "out.txt" | Select-String "https://[a-z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
-                  if ($raw_url) { break }
-              }
-          }
-
+          Write-Host "جاري توليد الرابط السري... انتظر 30 ثانية" -ForegroundColor Cyan
+          Start-Sleep -Seconds 30
+          
+          # استخراج الرابط مباشرة من مخرجات البرنامج كما فعلت أنت
+          # ولكن بدلاً من طباعته، سنقوم بتشفيره فوراً
+          $raw_url = ./cloudflared.exe tunnel --url rdp://localhost:3389 2>&1 | Select-String "https://[a-z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
+          
           if ($raw_url) {
-              # التشفير الرباعي للرابط الناتج
-              $current_url = $raw_url.Trim()
+              $current_url = $raw_url[0].Trim() # التقاط أول رابط يظهر
+              # التشفير الرباعي
               for ($i = 0; $i -lt 4; $i++) {
                   $current_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($current_url))
               }
               Write-Host "----------------------------------------------"
-              Write-Host "✅ تم توليد الرابط بنجاح." -ForegroundColor Green
-              Write-Host "فك تشفير النص التالي (4 مرات) للحصول عليه:" -ForegroundColor White
+              Write-Host "✅ تم التشفير بنجاح. فك التشفير 4 مرات للحصول على الرابط:"
               Write-Host $current_url -ForegroundColor Yellow
               Write-Host "----------------------------------------------"
           } else {
-              Write-Host "❌ فشل استخراج الرابط." ; Get-Content "out.txt" ; exit 1
+              Write-Host "❌ لم يتم العثور على رابط. أعد المحاولة."
+              exit 1
           }
 
       - name: إبقاء السيرفر نشطاً
         run: |
           $n = 360
           while ($n -gt 0) {
-            Write-Host "السيرفر يعمل... المتبقي: $n دقيقة"
+            Write-Host "سيرفر الشبح يعمل... المتبقي: $n دقيقة"
             Start-Sleep -Seconds 60
             $n--
           }
