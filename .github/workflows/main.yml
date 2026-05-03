@@ -1,4 +1,4 @@
-- name: تشغيل النفق واستخراج وتشفير الرابط
+- name: rrr
         shell: pwsh
         run: |
           Write-Host "جاري بدء تشغيل النفق (بروتوكول HTTP2)..." -ForegroundColor Cyan
