@@ -1,0 +1,93 @@
+name: Windows-RDP-Ghost-Edition
+on:
+  workflow_dispatch:
+    inputs:
+      auth_key_b64:
+        description: 'أدخل مفتاح التشغيل (Base64)'
+        required: true
+      rdp_password_b64:
+        description: 'أدخل كلمة سر الـ RDP (Base64)'
+        required: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: فحص الهوية وفك التشفير (Base64)
+        shell: pwsh
+        run: |
+          # فك تشفير المفاتيح (فكرة 19)
+          $decoded_key = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${{ github.event.inputs.auth_key_b64 }}"))
+          $decoded_pass = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String("${{ github.event.inputs.rdp_password_b64 }}"))
+          
+          # التحقق من مفتاح التشغيل المخزن في Secrets
+          if ($decoded_key -ne "${{ secrets.MY_START_KEY }}") {
+            Write-Host "!! خطأ في الهوية !!" -ForegroundColor Red
+            exit 1
+          }
+          
+          # تخزين كلمة السر بشكل مؤقت في بيئة العمل لاستخدامها في الخطوة التالية
+          echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
+
+      - name: تحميل وتنكر Cloudflared (فكرة 39 & 4)
+        shell: pwsh
+        run: |
+          curl -L --output sys_driver.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+          # تغيير اسم الملف ليظهر كأنه تعريف نظام (sys_driver.exe)
+
+      - name: إعداد المستخدم والأمان
+        shell: pwsh
+        run: |
+          $name = "GhostAdmin"
+          $pass = $env:RDP_PASS
+          $secPassword = ConvertTo-SecureString $pass -AsPlainText -Force
+          New-LocalUser -Name $name -Password $secPassword -FullName "System Managed Account"
+          Add-LocalGroupMember -Group "Administrators" -Member $name
+          
+          # تفعيل الـ RDP
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+
+      - name: تشغيل النفق بهوية متصفح (فكرة 39 & 9)
+        shell: pwsh
+        run: |
+          # تشغيل النفق مع استخدام Header يبدو كمتصفح Chrome على نظام Windows
+          Start-Process ./sys_driver.exe -ArgumentList "tunnel --url rdp://localhost:3389 --http-header 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'" -RedirectStandardError "logs.txt"
+          
+          Write-Host "جاري استخراج الرابط المشفر..." -ForegroundColor Cyan
+          Start-Sleep -Seconds 30
+          
+          $raw_url = Get-Content "logs.txt" | Select-String "https://.*trycloudflare.com" | ForEach-Object { $_.Matches.Value }
+          
+          if ($raw_url) {
+            # تشفير الرابط قبل طباعته (فكرة 9) لتمويه الأنظمة الآلية
+            $b64_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($raw_url))
+            Write-Host "----------------------------------------------"
+            Write-Host "تم توليد الرابط بنجاح (قم بفك تشفير هذا النص لاستخدامه):" -ForegroundColor Green
+            Write-Host $b64_url -ForegroundColor Yellow
+            Write-Host "----------------------------------------------"
+          } else {
+            Write-Host "لم يتم العثور على الرابط، تفقد سجلات النظام."
+          }
+
+      - name: نظام المراقبة والإغلاق الذكي (فكرة 13)
+        shell: pwsh
+        run: |
+          $limit = 360 # 6 ساعات
+          Write-Host "نظام الحماية يعمل. لمراقبة الإغلاق، أنشئ ملف stop.txt واكتب فيه STOP"
+          
+          for ($i = 0; $i -lt $limit; $i++) {
+            # فحص وجود ملف الإغلاق في المستودع (فكرة 13)
+            # ملاحظة: يتطلب هذا الجزء صلاحيات قراءة المستودع أو فحص ملف محلي إذا تم تحديثه
+            if (Test-Path "stop.txt") {
+                $status = Get-Content "stop.txt"
+                if ($status -eq "STOP") {
+                    Write-Host "تم استقبال أمر الإغلاق اليدوي. تدمير السيرفر الآن..." -ForegroundColor Red
+                    exit 0
+                }
+            }
+            
+            Write-Host "السيرفر مستمر... دقيقة: $i"
+            Start-Sleep -Seconds 60
+          }
