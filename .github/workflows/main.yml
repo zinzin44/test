@@ -24,33 +24,57 @@ jobs:
           $k = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
           if ($k -eq "${{ secrets.MY_START_KEY }}") {
             $p = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
+            # تخزين كلمة السر في بيئة العمل بشكل صحيح
             echo "RDP_PASS=$p" >> $env:GITHUB_ENV
-          } else { exit 1 }
+            Write-Host "✅ Key Verified"
+          } else { 
+            Write-Host "❌ Invalid Key"
+            exit 1 
+          }
 
-      - name: Setup RDP
+      - name: Setup RDP and User
+        shell: pwsh
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          net user GhostAdmin "${{ env:RDP_PASS }}" /add
+          # استخدام المتغير من البيئة مباشرة
+          $pass = $env:RDP_PASS
+          net user GhostAdmin $pass /add
           net localgroup administrators GhostAdmin /add
 
       - name: Start Tunnel (TCP Mode)
         shell: pwsh
         run: |
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-          # تشغيل النفق بنمط TCP صريح
+          
+          # تشغيل النفق بنمط TCP صريح لضمان المصافحة الصحيحة
           Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "log.txt"
           
-          Start-Sleep -Seconds 10
-          $raw = Get-Content "log.txt" | Select-String "https://.*\.trycloudflare\.com"
+          Write-Host "Waiting for tunnel to initialize..."
+          Start-Sleep -Seconds 15
+          
+          $log = Get-Content "log.txt"
+          $raw = $log | Select-String "https://[a-z0-9-]+\.trycloudflare\.com"
+          
           if ($raw) {
             $url = $raw.Matches[0].Value
             $enc = $url
-            for ($i=0; $i -lt 4; $i++) { $enc = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($enc)) }
-            Write-Host "--------------------------"
-            Write-Host "ENCODED_URL: $enc"
-            Write-Host "--------------------------"
+            # التشفير الرباعي
+            for ($i=0; $i -lt 4; $i++) { 
+                $enc = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($enc)) 
+            }
+            Write-Host "----------------------------------------------"
+            Write-Host "✅ ENCODED URL (4x):"
+            Write-Host $enc -ForegroundColor Yellow
+            Write-Host "----------------------------------------------"
+          } else {
+            Write-Host "❌ Failed to get tunnel URL. Log content:"
+            Get-Content "log.txt"
+            exit 1
           }
           
-          # إبقاء السيرفر حي
-          while($true) { Start-Sleep -Seconds 60 }
+          # إبقاء المهمة تعمل لمدة 6 ساعات
+          for ($i=0; $i -lt 360; $i++) {
+            Write-Host "Server is running... Minute: $i"
+            Start-Sleep -Seconds 60
+          }
