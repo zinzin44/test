@@ -1,19 +1,19 @@
-name: Windows-RDP-Ghost-Edition-Fixed
+name: Windows-RDP-Ghost-Extreme-v4
 on:
   workflow_dispatch:
     inputs:
       auth_key_b64:
-        description: 'أدخل مفتاح التشغيل (المشفر 4 مرات)'
+        description: 'أدخل مفتاح التشغيل (مشفر 4 مرات)'
         required: true
       rdp_password_b64:
-        description: 'أدخل كلمة سر الـ RDP (المشفرة 4 مرات)'
+        description: 'أدخل كلمة سر الـ RDP (مشفرة 4 مرات)'
         required: true
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: فك التشفير الرباعي والتحقق
+      - name: فك التشفير الرباعي للمفاتيح
         shell: pwsh
         run: |
           function Decode-Quad ($inputString) {
@@ -27,7 +27,7 @@ jobs:
               $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
               $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
               if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
-                  Write-Host "✅ تم التحقق بنجاح" -ForegroundColor Green
+                  Write-Host "✅ تم التحقق من الهوية" -ForegroundColor Green
                   echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
               } else {
                   Write-Host "❌ خطأ في المطابقة" -ForegroundColor Red
@@ -55,37 +55,44 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
 
-      - name: تشغيل النفق المجاني (تصحيح الأوامر)
+      - name: تشغيل النفق وتشفير الرابط رباعياً
         shell: pwsh
         run: |
-          # تم حذف --http-header لأنه لا يدعم بروتوكول rdp:// في الأنفاق السريعة
+          # تشغيل النفق
           Start-Process ./sys_driver.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "logs.txt"
           
-          Write-Host "جاري توليد الرابط المجاني..." -ForegroundColor Cyan
-          Start-Sleep -Seconds 35
+          Write-Host "جاري توليد الرابط وتشفيره 4 مرات..." -ForegroundColor Cyan
+          Start-Sleep -Seconds 40
           
           $logContent = Get-Content "logs.txt"
           $raw_url = $logContent | Select-String "https://.*trycloudflare.com" | ForEach-Object { $_.Matches.Value }
           
           if ($raw_url) {
-              $b64_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($raw_url))
+              # عملية التشفير الرباعي للرابط الناتج
+              $current_url = $raw_url.Trim()
+              for ($i = 0; $i -lt 4; $i++) {
+                  $current_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($current_url))
+              }
+              
               Write-Host "----------------------------------------------"
-              Write-Host "رابط السيرفر المشفر (فك التشفير لاستخدامه):" -ForegroundColor Green
-              Write-Host $b64_url -ForegroundColor Yellow
+              Write-Host "تم استخراج الرابط بنجاح." -ForegroundColor Green
+              Write-Host "فك تشفير النص التالي (4 مرات) للحصول على الرابط:" -ForegroundColor White
+              Write-Host "----------------------------------------------"
+              Write-Host $current_url -ForegroundColor Yellow
               Write-Host "----------------------------------------------"
           } else {
-              Write-Host "❌ فشل استخراج الرابط. محتوى السجل:" -ForegroundColor Red
+              Write-Host "❌ لم يتم العثور على الرابط. سجلات النظام:" -ForegroundColor Red
               $logContent
           }
 
-      - name: المراقبة ومفتاح الإغلاق
+      - name: المراقبة ومفتاح الإغلاق (stop.txt)
         shell: pwsh
         run: |
-          Write-Host "السيرفر يعمل... المراقبة نشطة."
+          Write-Host "السيرفر نشط. للإغلاق الفوري، أضف STOP داخل ملف stop.txt"
           for ($i = 0; $i -lt 360; $i++) {
               if (Test-Path "stop.txt") {
                   if ((Get-Content "stop.txt").Trim() -eq "STOP") {
-                      Write-Host "🛑 تم الإغلاق اليدوي." -ForegroundColor Red
+                      Write-Host "🛑 تم الإغلاق اليدوي بنجاح." -ForegroundColor Red
                       exit 0
                   }
               }
