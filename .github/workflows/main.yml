@@ -1,121 +1,41 @@
-name: Windows-RDP-Ghost-Extreme-v4
-on:
-  workflow_dispatch:
-    inputs:
-      auth_key_b64:
-        description: 'أدخل مفتاح التشغيل (مشفر 4 مرات)'
-        required: true
-      rdp_password_b64:
-        description: 'أدخل كلمة سر الـ RDP (مشفرة 4 مرات)'
-        required: true
-
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - name: فك التشفير الرباعي للمفاتيح
-        shell: pwsh
-        run: |
-          function Decode-Quad ($inputString) {
-              $current = $inputString.Trim()
-              for ($i = 0; $i -lt 4; $i++) {
-                  $current = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($current)).Trim()
-              }
-              return $current
-          }
-          try {
-              $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
-              $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
-              
-              # استبدال التشفير بكلمة السر لضمان مطابقتها مع السيكرت الخاص بك
-              if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
-                  Write-Host "✅ تم التحقق من الهوية" -ForegroundColor Green
-                  echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
-              } else {
-                  Write-Host "❌ خطأ في المطابقة: المفتاح غير صحيح" -ForegroundColor Red
-                  exit 1
-              }
-          } catch {
-              Write-Host "❌ فشل فك التشفير: تأكد من إدخال نص مشفر 4 مرات بـ Base64" -ForegroundColor Red
-              exit 1
-          }
-
-      - name: تحميل وتنكر الأداة
-        shell: pwsh
-        run: |
-          Write-Host "جاري تحميل محرك النظام..." -ForegroundColor Cyan
-          curl -L --output sys_driver.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-
-      - name: إعداد المستخدم والأمان (RDP)
-        shell: pwsh
-        run: |
-          $name = "GhostAdmin"
-          $pass = $env:RDP_PASS
-          $secPassword = ConvertTo-SecureString $pass -AsPlainText -Force
-          
-          Write-Host "جاري إنشاء الحساب وإعداد الصلاحيات..." -ForegroundColor Cyan
-          New-LocalUser -Name $name -Password $secPassword -FullName "System Managed Account" -Description "RDP Admin"
-          Add-LocalGroupMember -Group "Administrators" -Member $name
-          
-          # تفعيل RDP وتجاوز جدار الحماية
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          Write-Host "✅ تم إعداد RDP بنجاح" -ForegroundColor Green
-
-      - name: تشغيل النفق واستخراج الرابط
+- name: تشغيل النفق واستخراج وتشفير الرابط
         shell: pwsh
         run: |
           Write-Host "جاري بدء تشغيل النفق (بروتوكول HTTP2)..." -ForegroundColor Cyan
-          # إضافة --protocol http2 لحل مشكلة Handshake
+          # تشغيل النفق في الخلفية مع توجيه الأخطاء للسجل
           Start-Process ./sys_driver.exe -ArgumentList "tunnel --url rdp://localhost:3389 --protocol http2" -RedirectStandardError "logs.txt"
           
           $raw_url = ""
-          Write-Host "في انتظار توليد الرابط من Cloudflare..." -ForegroundColor Yellow
+          Write-Host "في انتظار توليد الرابط..." -ForegroundColor Yellow
           
-          # حلقة ذكية للبحث عن الرابط في السجلات لمدة دقيقتين كحد أقصى
+          # حلقة البحث عن الرابط (بدون طباعته)
           for ($i = 0; $i -lt 24; $i++) {
               Start-Sleep -Seconds 5
               if (Test-Path "logs.txt") {
                   $logContent = Get-Content "logs.txt"
-                  $raw_url = $logContent | Select-String "https://[a-z0-迷-z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
+                  # استخراج الرابط وتخزينه في متغير فقط
+                  $raw_url = $logContent | Select-String "https://[a-z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
                   if ($raw_url) { break }
               }
           }
 
           if ($raw_url) {
-              Write-Host "✅ تم استخراج الرابط: $raw_url" -ForegroundColor Green
-              
-              # التشفير الرباعي للرابط الناتج
+              # تشفير الرابط 4 مرات سرّياً
               $current_url = $raw_url.Trim()
               for ($i = 0; $i -lt 4; $i++) {
                   $current_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($current_url))
               }
               
+              # طباعة النتائج المشفرة فقط
+              Write-Host "✅ تم توليد وتشفير الرابط بنجاح." -ForegroundColor Green
               Write-Host "----------------------------------------------" -ForegroundColor Cyan
               Write-Host "فك تشفير النص التالي (4 مرات) للحصول على الرابط:" -ForegroundColor White
               Write-Host $current_url -ForegroundColor Yellow
               Write-Host "----------------------------------------------" -ForegroundColor Cyan
+              
+              # مسح الرابط من الذاكرة لزيادة الأمان
+              $raw_url = $null
           } else {
-              Write-Host "❌ فشل استخراج الرابط. سجلات الخطأ:" -ForegroundColor Red
-              Get-Content "logs.txt"
+              Write-Host "❌ فشل استخراج الرابط. قد تكون هناك مشكلة في الاتصال." -ForegroundColor Red
               exit 1
-          }
-
-      - name: المراقبة ومفتاح الإغلاق الذكي
-        shell: pwsh
-        run: |
-          Write-Host "🚀 السيرفر نشط الآن لمدة 6 ساعات." -ForegroundColor Green
-          Write-Host "للإغلاق الفوري: أنشئ ملف باسم stop.txt واكتب بداخله STOP" -ForegroundColor White
-          
-          $count = 0
-          while ($count -lt 360) { # 360 دقيقة = 6 ساعات
-              if (Test-Path "stop.txt") {
-                  if ((Get-Content "stop.txt").Trim() -eq "STOP") {
-                      Write-Host "🛑 تم استلام أمر الإغلاق اليدوي." -ForegroundColor Red
-                      break
-                  }
-              }
-              Start-Sleep -Seconds 60
-              $count++
           }
