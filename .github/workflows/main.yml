@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: فك التشفير والتحقق
+      - name: فك التشفير والتحقق من الهوية
         shell: pwsh
         run: |
           function Decode-Quad ($inputString) {
@@ -23,11 +23,14 @@ jobs:
               }
               return $current
           }
-          $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
-          $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
-          if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
-              echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
-          } else { exit 1 }
+          try {
+              $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
+              $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
+              if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
+                  Write-Host "✅ تم التحقق من الهوية" -ForegroundColor Green
+                  echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
+              } else { exit 1 }
+          } catch { exit 1 }
 
       - name: تحميل Cloudflared وإعداد RDP
         run: |
@@ -43,39 +46,55 @@ jobs:
           net user $name $pass /add
           net localgroup administrators $name /add
 
-      - name: استخراج وتشفير الرابط (طريقة مضمونة 100%)
+      - name: اقتناص وتشفير الرابط فوراً
         shell: pwsh
         run: |
-          # تشغيل النفق كعملية خلفية (مثل كودك الناجح)
-          Start-Process ./cloudflared.exe -ArgumentList "tunnel --url rdp://localhost:3389"
+          Write-Host "جاري بدء النفق واقتناص الرابط... يرجى الانتظار" -ForegroundColor Cyan
           
-          Write-Host "جاري توليد الرابط السري... انتظر 30 ثانية" -ForegroundColor Cyan
-          Start-Sleep -Seconds 30
+          # تشغيل النفق والتقاط مخرجات الأخطاء مباشرة
+          $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+          $processInfo.FileName = "./cloudflared.exe"
+          $processInfo.Arguments = "tunnel --url rdp://localhost:3389 --protocol http2"
+          $processInfo.RedirectStandardError = $true
+          $processInfo.UseShellExecute = $false
+          $process = [System.Diagnostics.Process]::Start($processInfo)
           
-          # استخراج الرابط مباشرة من مخرجات البرنامج كما فعلت أنت
-          # ولكن بدلاً من طباعته، سنقوم بتشفيره فوراً
-          $raw_url = ./cloudflared.exe tunnel --url rdp://localhost:3389 2>&1 | Select-String "https://[a-z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
-          
-          if ($raw_url) {
-              $current_url = $raw_url[0].Trim() # التقاط أول رابط يظهر
-              # التشفير الرباعي
-              for ($i = 0; $i -lt 4; $i++) {
-                  $current_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($current_url))
+          $raw_url = ""
+          $timeout = Get-Date
+
+          # مراقبة المخرجات سطراً بسطر حتى نجد الرابط
+          while (!$process.HasExited) {
+              $line = $process.StandardError.ReadLine()
+              # ابحث عن نمط الرابط في السطر الحالي
+              if ($line -match "https://[a-z0-9-]+\.trycloudflare\.com") {
+                  $raw_url = $matches[0]
+                  
+                  # تشفير الرابط 4 مرات فوراً في الذاكرة
+                  $current_url = $raw_url.Trim()
+                  for ($i = 0; $i -lt 4; $i++) {
+                      $current_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($current_url))
+                  }
+                  
+                  Write-Host "----------------------------------------------" -ForegroundColor Cyan
+                  Write-Host "✅ تم اقتناص الرابط وتشفيره بنجاح:" -ForegroundColor Green
+                  Write-Host $current_url -ForegroundColor Yellow
+                  Write-Host "----------------------------------------------" -ForegroundColor Cyan
+                  break
               }
-              Write-Host "----------------------------------------------"
-              Write-Host "✅ تم التشفير بنجاح. فك التشفير 4 مرات للحصول على الرابط:"
-              Write-Host $current_url -ForegroundColor Yellow
-              Write-Host "----------------------------------------------"
-          } else {
-              Write-Host "❌ لم يتم العثور على رابط. أعد المحاولة."
-              exit 1
+              
+              # مخرج أمان بعد دقيقتين إذا لم يظهر الرابط
+              if (((Get-Date) - $timeout).TotalSeconds -gt 120) {
+                  Write-Host "❌ فشل الحصول على الرابط (Timeout)" -ForegroundColor Red
+                  $process.Kill()
+                  exit 1
+              }
           }
 
-      - name: إبقاء السيرفر نشطاً
+      - name: إبقاء السيرفر يعمل
         run: |
           $n = 360
           while ($n -gt 0) {
-            Write-Host "سيرفر الشبح يعمل... المتبقي: $n دقيقة"
+            Write-Host "السيرفر يعمل... المتبقي: $n دقيقة"
             Start-Sleep -Seconds 60
             $n--
           }
