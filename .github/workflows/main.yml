@@ -1,108 +1,56 @@
 name: Windows-RDP-Ghost-Extreme-v4
-
 on:
   workflow_dispatch:
     inputs:
       auth_key_b64:
-        description: 'أدخل مفتاح التشغيل (مشفر 4 مرات)'
+        description: 'Key (4x Base64)'
         required: true
       rdp_password_b64:
-        description: 'أدخل كلمة سر الـ RDP (مشفرة 4 مرات)'
+        description: 'Password (4x Base64)'
         required: true
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: فك التشفير والتحقق
+      - name: Decode and Auth
         shell: pwsh
         run: |
-          function Decode-Quad ($inputString) {
-              $current = $inputString.Trim()
-              try {
-                  for ($i = 0; $i -lt 4; $i++) {
-                      $current = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($current)).Trim()
-                  }
-                  return $current
-              } catch {
-                  Write-Error "خطأ في فك التشفير. تأكد من إدخال نص Base64 صالح مشفر 4 مرات."
-                  exit 1
-              }
+          function Decode-Quad ($s) {
+            $curr = $s.Trim()
+            for ($i=0; $i -lt 4; $i++) { $curr = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($curr)).Trim() }
+            return $curr
           }
+          $k = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
+          if ($k -eq "${{ secrets.MY_START_KEY }}") {
+            $p = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
+            echo "RDP_PASS=$p" >> $env:GITHUB_ENV
+          } else { exit 1 }
 
-          $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
-          $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
-
-          if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
-              # استخدام GITHUB_ENV بشكل صحيح في PowerShell
-              "RDP_PASS=$decoded_pass" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-              Write-Host "✅ تم التحقق من المفتاح بنجاح." -ForegroundColor Green
-          } else {
-              Write-Host "❌ مفتاح التشغيل غير صحيح!" -ForegroundColor Red
-              exit 1
-          }
-
-      - name: تحميل Cloudflared وإعداد RDP
-        shell: pwsh
+      - name: Setup RDP
         run: |
-          curl -L --output cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+          net user GhostAdmin "${{ env:RDP_PASS }}" /add
+          net localgroup administrators GhostAdmin /add
 
-      - name: إنشاء المستخدم
+      - name: Start Tunnel (TCP Mode)
         shell: pwsh
         run: |
-          $name = "GhostAdmin"
-          $pass = $env:RDP_PASS
-          net user $name $pass /add
-          net localgroup administrators $name /add
-          Write-Host "✅ تم إنشاء المستخدم: $name" -ForegroundColor Green
-
-      - name: توليد وتشفير الرابط
-        shell: pwsh
-        run: |
-          Write-Host "جاري بدء النفق... يرجى الانتظار" -ForegroundColor Cyan
+          curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+          # تشغيل النفق بنمط TCP صريح
+          Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "log.txt"
           
-          # تشغيل cloudflared في الخلفية وتوجيه المخرجات لملف مؤقت للبحث عن الرابط
-          Start-Process ./cloudflared.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "log.txt"
-          
-          $raw_url = ""
-          $startTime = Get-Date
-          while ($true) {
-              if (Test-Path "log.txt") {
-                  $content = Get-Content "log.txt"
-                  $line = $content | Select-String -Pattern "https://[a-z0-9-]+\.trycloudflare\.com"
-                  if ($line) {
-                      $raw_url = $line.Matches[0].Value
-                      break
-                  }
-              }
-              if (((Get-Date) - $startTime).TotalSeconds -gt 60) { 
-                  Write-Host "❌ فشل في الحصول على الرابط خلال الوقت المحدد" -ForegroundColor Red
-                  exit 1 
-              }
-              Start-Sleep -Seconds 2
-          }
-
-          # التشفير الرباعي للرابط الناتج
-          $current_url = $raw_url
-          for ($i = 0; $i -lt 4; $i++) {
-              $current_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($current_url))
+          Start-Sleep -Seconds 10
+          $raw = Get-Content "log.txt" | Select-String "https://.*\.trycloudflare\.com"
+          if ($raw) {
+            $url = $raw.Matches[0].Value
+            $enc = $url
+            for ($i=0; $i -lt 4; $i++) { $enc = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($enc)) }
+            Write-Host "--------------------------"
+            Write-Host "ENCODED_URL: $enc"
+            Write-Host "--------------------------"
           }
           
-          Write-Host "`n"
-          Write-Host "----------------------------------------------" -ForegroundColor White
-          Write-Host "✅ الرابط جاهز ومشفر (4 مرات):" -ForegroundColor Green
-          Write-Host $current_url -ForegroundColor Yellow
-          Write-Host "----------------------------------------------" -ForegroundColor White
-
-      - name: إبقاء السيرفر يعمل
-        shell: pwsh
-        run: |
-          $n = 360
-          while ($n -gt 0) {
-              Write-Host "السيرفر يعمل... المتبقي: $n دقيقة"
-              Start-Sleep -Seconds 60
-              $n--
-          }
+          # إبقاء السيرفر حي
+          while($true) { Start-Sleep -Seconds 60 }
