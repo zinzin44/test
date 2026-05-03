@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: فك التشفير الرباعي للمفاتيح
+      - name: فك التشفير والتحقق من الهوية
         shell: pwsh
         run: |
           function Decode-Quad ($inputString) {
@@ -26,88 +26,66 @@ jobs:
           try {
               $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
               $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
+              # تحقق من السيكرت الخاص بك
               if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
-                  Write-Host "✅ تم التحقق من الهوية" -ForegroundColor Green
-                  Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASS=$decoded_pass"
+                  Write-Host "✅ تم التحقق" -ForegroundColor Green
+                  echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
               } else {
-                  Write-Host "❌ خطأ في المطابقة" -ForegroundColor Red
-                  exit 1
+                  Write-Host "❌ خطأ في المفتاح" -ForegroundColor Red ; exit 1
               }
-          } catch {
-              Write-Host "❌ فشل فك التشفير" -ForegroundColor Red
-              exit 1
-          }
+          } catch { Write-Host "❌ فشل فك التشفير" ; exit 1 }
 
-      - name: تحميل وتنكر الأداة
-        shell: pwsh
+      - name: تحميل وتفعيل RDP
         run: |
-          curl -L --output sys_driver.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-
-      - name: إعداد المستخدم والأمان
-        shell: pwsh
-        run: |
-          $name = "GhostAdmin"
-          $pass = $env:RDP_PASS
-          $secPassword = ConvertTo-SecureString $pass -AsPlainText -Force
-          New-LocalUser -Name $name -Password $secPassword -FullName "System Managed Account"
-          Add-LocalGroupMember -Group "Administrators" -Member $name
+          curl -L --output cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
 
-      - name: تشغيل النفق واستخراج الرابط (الآلية المطورة)
+      - name: إنشاء المستخدم
+        run: |
+          $name = "GhostAdmin"
+          $pass = $env:RDP_PASS
+          net user $name $pass /add
+          net localgroup administrators $name /add
+
+      - name: تشغيل النفق وتشفير الرابط (الآلية المضمونة)
         shell: pwsh
         run: |
-          Write-Host "جاري بدء تشغيل النفق واستخراج الرابط سرياً..." -ForegroundColor Cyan
+          # تشغيل النفق وتوجيه المخرجات لملف مؤقت
+          Start-Process ./cloudflared.exe -ArgumentList "tunnel --url rdp://localhost:3389 --protocol http2" -RedirectStandardError "out.txt"
           
-          # تشغيل العملية والبدء في مراقبة مخرجاتها فوراً
-          $psi = New-Object System.Diagnostics.ProcessStartInfo
-          $psi.FileName = "./sys_driver.exe"
-          $psi.Arguments = "tunnel --url rdp://localhost:3389 --protocol http2"
-          $psi.RedirectStandardError = $true
-          $psi.UseShellExecute = $false
-          $process = [System.Diagnostics.Process]::Start($psi)
-          
+          Write-Host "جاري استخراج الرابط وتشفيره..." -ForegroundColor Cyan
           $raw_url = ""
-          $timeout = Get-Date
-          $found = $false
-
-          # قراءة مخرجات الخطأ (حيث يطبع cloudflared الرابط) سطراً بسطر
-          while (!$process.HasExited -and !$found) {
-              $line = $process.StandardError.ReadLine()
-              if ($line -match "https://[a-z0-9-]+\.trycloudflare\.com") {
-                  $raw_url = $matches[0]
-                  $found = $true
+          # الانتظار حتى يظهر الرابط في الملف
+          for ($i = 0; $i -lt 20; $i++) {
+              Start-Sleep -Seconds 5
+              if (Test-Path "out.txt") {
+                  $raw_url = Get-Content "out.txt" | Select-String "https://[a-z0-9-]+\.trycloudflare\.com" | ForEach-Object { $_.Matches.Value }
+                  if ($raw_url) { break }
               }
-              # مؤقت أمان لمدة دقيقتين لمنع التعليق اللانهائي
-              if (((Get-Date) - $timeout).TotalSeconds -gt 90) { break }
           }
 
-          if ($found) {
-              # تشفير الرابط 4 مرات
+          if ($raw_url) {
+              # التشفير الرباعي للرابط الناتج
               $current_url = $raw_url.Trim()
               for ($i = 0; $i -lt 4; $i++) {
                   $current_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($current_url))
               }
-              
               Write-Host "----------------------------------------------"
-              Write-Host "✅ تمت العملية بنجاح." -ForegroundColor Green
-              Write-Host "فك تشفير النص التالي (4 مرات) للحصول على الرابط:" -ForegroundColor White
-              Write-Host "----------------------------------------------"
+              Write-Host "✅ تم توليد الرابط بنجاح." -ForegroundColor Green
+              Write-Host "فك تشفير النص التالي (4 مرات) للحصول عليه:" -ForegroundColor White
               Write-Host $current_url -ForegroundColor Yellow
               Write-Host "----------------------------------------------"
           } else {
-              Write-Host "❌ فشل استخراج الرابط أو تجاوز الوقت المسموح." -ForegroundColor Red
-              exit 1
+              Write-Host "❌ فشل استخراج الرابط." ; Get-Content "out.txt" ; exit 1
           }
 
-      - name: المراقبة ومفتاح الإغلاق
-        shell: pwsh
+      - name: إبقاء السيرفر نشطاً
         run: |
-          Write-Host "🚀 السيرفر نشط الآن. للإغلاق، أضف STOP داخل ملف stop.txt"
-          for ($i = 0; $i -lt 360; $i++) {
-              if (Test-Path "stop.txt") {
-                  if ((Get-Content "stop.txt").Trim() -eq "STOP") { break }
-              }
-              Start-Sleep -Seconds 60
+          $n = 360
+          while ($n -gt 0) {
+            Write-Host "السيرفر يعمل... المتبقي: $n دقيقة"
+            Start-Sleep -Seconds 60
+            $n--
           }
