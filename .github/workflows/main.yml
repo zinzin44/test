@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: فك التشفير والتحقق من الهوية
+      - name: فك التشفير والتحقق
         shell: pwsh
         run: |
           function Decode-Quad ($inputString) {
@@ -23,14 +23,11 @@ jobs:
               }
               return $current
           }
-          try {
-              $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
-              $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
-              if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
-                  Write-Host "✅ تم التحقق من الهوية" -ForegroundColor Green
-                  echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
-              } else { exit 1 }
-          } catch { exit 1 }
+          $decoded_key = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
+          $decoded_pass = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
+          if ($decoded_key -eq "${{ secrets.MY_START_KEY }}") {
+              echo "RDP_PASS=$decoded_pass" >> $env:GITHUB_ENV
+          } else { exit 1 }
 
       - name: تحميل Cloudflared وإعداد RDP
         run: |
@@ -46,15 +43,15 @@ jobs:
           net user $name $pass /add
           net localgroup administrators $name /add
 
-      - name: اقتناص وتشفير الرابط فوراً
+      - name: توليد وتشفير الرابط (الوضع المتوافق)
         shell: pwsh
         run: |
-          Write-Host "جاري بدء النفق واقتناص الرابط... يرجى الانتظار" -ForegroundColor Cyan
+          Write-Host "جاري بدء النفق... يرجى الانتظار" -ForegroundColor Cyan
           
-          # تشغيل النفق والتقاط مخرجات الأخطاء مباشرة
+          # إزالة --protocol http2 والاعتماد على الإعداد الافتراضي لزيادة التوافق
           $processInfo = New-Object System.Diagnostics.ProcessStartInfo
           $processInfo.FileName = "./cloudflared.exe"
-          $processInfo.Arguments = "tunnel --url rdp://localhost:3389 --protocol http2"
+          $processInfo.Arguments = "tunnel --url rdp://localhost:3389"
           $processInfo.RedirectStandardError = $true
           $processInfo.UseShellExecute = $false
           $process = [System.Diagnostics.Process]::Start($processInfo)
@@ -62,32 +59,25 @@ jobs:
           $raw_url = ""
           $timeout = Get-Date
 
-          # مراقبة المخرجات سطراً بسطر حتى نجد الرابط
           while (!$process.HasExited) {
               $line = $process.StandardError.ReadLine()
-              # ابحث عن نمط الرابط في السطر الحالي
+              # التأكد من التقاط الرابط حتى لو كان محاطاً بنصوص أخرى
               if ($line -match "https://[a-z0-9-]+\.trycloudflare\.com") {
-                  $raw_url = $matches[0]
+                  $raw_url = $matches[0].Trim()
                   
-                  # تشفير الرابط 4 مرات فوراً في الذاكرة
-                  $current_url = $raw_url.Trim()
+                  # التشفير الرباعي
+                  $current_url = $raw_url
                   for ($i = 0; $i -lt 4; $i++) {
                       $current_url = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($current_url))
                   }
                   
-                  Write-Host "----------------------------------------------" -ForegroundColor Cyan
-                  Write-Host "✅ تم اقتناص الرابط وتشفيره بنجاح:" -ForegroundColor Green
+                  Write-Host "----------------------------------------------"
+                  Write-Host "✅ الرابط جاهز ومشفر:" -ForegroundColor Green
                   Write-Host $current_url -ForegroundColor Yellow
-                  Write-Host "----------------------------------------------" -ForegroundColor Cyan
+                  Write-Host "----------------------------------------------"
                   break
               }
-              
-              # مخرج أمان بعد دقيقتين إذا لم يظهر الرابط
-              if (((Get-Date) - $timeout).TotalSeconds -gt 120) {
-                  Write-Host "❌ فشل الحصول على الرابط (Timeout)" -ForegroundColor Red
-                  $process.Kill()
-                  exit 1
-              }
+              if (((Get-Date) - $timeout).TotalSeconds -gt 120) { break }
           }
 
       - name: إبقاء السيرفر يعمل
