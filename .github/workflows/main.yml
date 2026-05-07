@@ -1,53 +1,16 @@
-name: Windows-RDP-Ghost-Ultimate-Final
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - name: 🔐 Secure Access Verification
-        shell: pwsh
-        env:
-          MASTER_KEY: ${{ secrets.MY_START_KEY }}
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:MASTER_KEY)) {
-            Write-Host "❌ Access Denied: MASTER_KEY missing."
-            exit 1
-          }
-
-          $finalPass = $env:RDP_PASSWORD
-          if ([string]::IsNullOrWhiteSpace($finalPass)) { $finalPass = "Ghost@Admin#2026!X" }
-
-          Write-Host "::add-mask::$finalPass"
-          echo "RDP_PASS=$finalPass" >> $env:GITHUB_ENV
-          Write-Host "✅ Identity Masked."
-
-      - name: 🛠️ Setup Windows Environment
-        shell: pwsh
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          $pass = $env:RDP_PASS
-          net user GhostAdmin $pass /add /Y
-          net localgroup administrators GhostAdmin /add
-
-      - name: 🌐 Establishing Stable Tunnel
+- name: 🌐 Establishing Stable Tunnel
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # تحميل الأداة
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           
-          # تشغيل النفق مع بروتوكول محدد لضمان الاستقرار ومنع خطأ 530
-          # --protocol http2 يساعد في تجاوز مشاكل الشبكة في خوادم جيتهاب
-          Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389 --protocol http2 --heartbeat-interval 10s" -RedirectStandardError "log.txt"
+          # استخدام بروتوكول quic لزيادة استقرار الرابط ومنع الخطأ 530
+          Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389 --protocol quic" -RedirectStandardError "log.txt"
           
-          Write-Host "Waiting for Cloudflare to register the origin... (35s)"
-          Start-Sleep -Seconds 35
+          Write-Host "Waiting for tunnel propagation..."
+          Start-Sleep -Seconds 40
           
           $log = Get-Content "log.txt"
           $raw = $log | Select-String "https://[a-z0-9-]+.trycloudflare.com"
@@ -56,24 +19,16 @@ jobs:
             $url = $raw.Matches[0].Value
             Write-Host "::add-mask::$url"
             
-            # ملاحظة هامة للمستخدم: الرابط للاتصال عبر برنامج RDP وليس المتصفح
-            $message = "🚀 <b>Ghost Session Ready!</b>`n`n" +
-                       "🌐 <b>Address:</b> <code>$url</code>`n" +
+            # تنبيهك في الرسالة بطريقة الاتصال
+            $message = "🚀 <b>RDP Tunnel Ready!</b>`n`n" +
+                       "🌐 <b>Hostname:</b> <code>$url</code>`n" +
                        "👤 <b>User:</b> <code>GhostAdmin</code>`n" +
                        "🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>`n`n" +
-                       "⚠️ <i>Note: Use this address in your RDP client, not in a browser.</i>"
+                       "📢 <b>How to connect:</b>`n" +
+                       "Run this on your PC:`n" +
+                       "<code>cloudflared access rdp --hostname $url --url localhost:3333</code>"
             
             $params = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" }
             $jsonPayload = $params | ConvertTo-Json -Compress
             Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $jsonPayload
-            Write-Host "✅ Connection info sent to Telegram."
-          } else {
-            Write-Host "❌ Failed to capture Tunnel URL. Check log.txt content below:"
-            Get-Content "log.txt"
-            exit 1
           }
-
-      - name: ⏳ Maintenance Mode
-        shell: pwsh
-        run: |
-          for ($i=1; $i -le 360; $i++) { Start-Sleep -Seconds 60 }
