@@ -13,12 +13,24 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: 🔐 Decoding & Stealth Mode
+      - name: 🛡️ Total Stealth Initialization
+        shell: pwsh
+        run: |
+          # هذه الخطوة تقوم بإجبار جيتهاب على وضع نجوم فوق المدخلات في أي مكان تظهر فيه لاحقاً
+          $rawAuth = "${{ github.event.inputs.auth_key_b64 }}"
+          $rawPass = "${{ github.event.inputs.rdp_password_b64 }}"
+          
+          Write-Host "::add-mask::$rawAuth"
+          Write-Host "::add-mask::$rawPass"
+          
+          # تخزينها في ملف البيئة لاستخدامها بأمان في الخطوات التالية
+          echo "SHADOW_AUTH=$rawAuth" >> $env:GITHUB_ENV
+          echo "SHADOW_PASS=$rawPass" >> $env:GITHUB_ENV
+          Write-Host "🛡️ Shielding sensitive inputs... DONE"
+
+      - name: 🔐 Decoding & Masking
         shell: pwsh
         env:
-          # تمرير المدخلات كمتغيرات بيئة يمنع ظهورها في سجلات GitHub (Logs)
-          RAW_AUTH: ${{ github.event.inputs.auth_key_b64 }}
-          RAW_PASS: ${{ github.event.inputs.rdp_password_b64 }}
           START_KEY: ${{ secrets.MY_START_KEY }}
         run: |
           function Decode-Quad ($s) {
@@ -29,93 +41,54 @@ jobs:
             return $curr
           }
 
-          # استدعاء القيم من متغيرات البيئة (آمن تماماً ولا يطبع القيم)
-          $k = Decode-Quad $env:RAW_AUTH
+          # استخراج القيم من "الظل" الذي أنشأناه في الخطوة الأولى
+          $k = Decode-Quad $env:SHADOW_AUTH
           
           if ($k -eq $env:START_KEY) {
-            $p = Decode-Quad $env:RAW_PASS
+            $p = Decode-Quad $env:SHADOW_PASS
             
-            # أمر إخفاء القيمة النهائية (Masking)
+            # إخفاء كلمة السر الصريحة أيضاً
             Write-Host "::add-mask::$p"
             
-            # تخزين كلمة السر في بيئة العمل لاستخدامها في الخطوات التالية
             echo "RDP_PASS=$p" >> $env:GITHUB_ENV
-            Write-Host "✅ Identity Verified. All inputs are hidden from logs."
+            Write-Host "✅ Identity Verified. Logs are clean."
           } else { 
-            Write-Host "❌ Security Breach: Unauthorized Access Attempt."
+            Write-Host "❌ Security Breach!"
             exit 1 
           }
 
-      - name: 🛠️ Windows Environment Setup
+      - name: 🛠️ Setup Windows
         shell: pwsh
         run: |
-          # تفعيل الـ RDP وفتح جدار الحماية
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          
-          # إنشاء المستخدم بصلاحيات كاملة
           $pass = $env:RDP_PASS
           net user GhostAdmin $pass /add
           net localgroup administrators GhostAdmin /add
-          Write-Host "✅ GhostAdmin user is ready."
 
-      - name: 🌐 Secure Tunneling & Notification
+      - name: 🌐 Tunnel & Telegram
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # تحميل مشغل النفق
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-          
-          # بدء النفق وحفظ السجلات محلياً لاستخراج الرابط
           Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "log.txt"
-          
-          Write-Host "Establishing connection... (20s)"
           Start-Sleep -Seconds 20
-          
           $log = Get-Content "log.txt"
           $raw = $log | Select-String "https://[a-z0-9-]+.trycloudflare.com"
           
           if ($raw) {
             $url = $raw.Matches[0].Value
-            # إخفاء الرابط من السجلات أيضاً
             Write-Host "::add-mask::$url"
-
-            # بناء رسالة التليجرام بتنسيق HTML
-            $message = "🚀 <b>RDP Session Active!</b>`n`n" +
-                       "🌐 <b>Host:</b> <code>$url</code>`n" +
-                       "👤 <b>User:</b> <code>GhostAdmin</code>`n" +
-                       "🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>"
-            
-            $tgUrl = "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage"
-            
-            # إرسال البيانات كـ JSON لضمان الدقة
-            $params = @{
-                chat_id = [string]$env:TG_CHAT_ID
-                text = $message
-                parse_mode = "HTML"
-            }
+            $message = "🚀 <b>RDP Ready!</b>`n`n🌐 <b>Host:</b> <code>$url</code>`n👤 <b>User:</b> <code>GhostAdmin</code>`n🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>"
+            $params = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" }
             $jsonPayload = $params | ConvertTo-Json -Compress
-            
-            try {
-                Invoke-RestMethod -Uri $tgUrl -Method Post -ContentType "application/json; charset=utf-8" -Body $jsonPayload
-                Write-Host "----------------------------------------------"
-                Write-Host "✅ SYSTEM SECURE: Check your Telegram."
-                Write-Host "----------------------------------------------"
-            } catch {
-                Write-Host "❌ Telegram Dispatch Failed."
-                exit 1
-            }
-          } else {
-            Write-Host "❌ Tunnel Error. Connectivity failed."
-            exit 1
+            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $jsonPayload
+            Write-Host "✅ Notification Sent."
           }
 
-      - name: ⏳ Persistent Session (6 Hours)
+      - name: ⏳ Keep Alive
         shell: pwsh
         run: |
-          Write-Host "The server is live. Do not close this workflow."
-          for ($i=1; $i -le 360; $i++) {
-            Start-Sleep -Seconds 60
-          }
+          for ($i=1; $i -le 360; $i++) { Start-Sleep -Seconds 60 }
