@@ -1,17 +1,46 @@
-name: 🌐 Launch Tunnel & Precise Extraction
+name: Windows-RDP-Absolute-Fix
+on: 
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 🔐 Secure Initialization
+        shell: pwsh
+        env:
+          MASTER_KEY: ${{ secrets.MY_START_KEY }}
+          RDP_PASS_SECRET: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:MASTER_KEY)) { 
+              Write-Host "❌ Error: MASTER_KEY is missing!"
+              exit 1 
+          }
+          $pass = $env:RDP_PASS_SECRET
+          if ([string]::IsNullOrWhiteSpace($pass)) { $pass = "Ghost@Admin#2026!" }
+          Write-Host "::add-mask::$pass"
+          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
+
+      - name: 🛠️ RDP & NLA System Fix
+        shell: pwsh
+        run: |
+          net user AdminUser "$env:RDP_PASS" /add /Y
+          net localgroup administrators AdminUser /add
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+
+      - name: 🌐 Launch Tunnel & Precise Extraction
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-          
-          # تشغيل النفق وحفظ السجلات
           Start-Process ./cf.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "logs.txt"
           
-          Write-Host "Searching for the correct tunnel URL..."
+          Write-Host "Searching for the tunnel URL..."
           $url = ""
-          
           for ($i=1; $i -le 12; $i++) {
               Start-Sleep -Seconds 5
               if (Test-Path "logs.txt") {
@@ -22,23 +51,20 @@ name: 🌐 Launch Tunnel & Precise Extraction
                       break
                   }
               }
-              # التصحيح هنا: استخدام {i} لمنع تداخل الـ Variable Scope
               Write-Host "Attempt ${i}: URL not ready yet..."
           }
 
           if ($url) {
             $clean_url = $url.Trim()
-            $message = "🚀 <b>RDP Connection Active!</b>`n`n" +
-                       "🌐 <b>Host:</b> <code>$clean_url</code>`n" +
-                       "👤 <b>User:</b> <code>AdminUser</code>`n" +
-                       "🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>`n`n" +
-                       "⚠️ <b>Note:</b> Use the link above in your RDP client."
-            
+            $message = "🚀 <b>RDP Connection Active!</b>`n`n🌐 <b>Host:</b> <code>$clean_url</code>`n👤 <b>User:</b> <code>AdminUser</code>`n🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>"
             $body = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" } | ConvertTo-Json -Compress
             Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $body
-            Write-Host "✅ Correct URL sent to Telegram."
           } else {
-            Write-Host "❌ Failed to extract URL."
-            if (Test-Path "logs.txt") { Get-Content "logs.txt" }
             exit 1
           }
+
+      - name: ⏳ Keep Alive
+        shell: pwsh
+        run: |
+          Write-Host "RDP is running... Keeping session alive."
+          for ($i=360; $i -gt 0; $i--) { Start-Sleep -Seconds 60 }
