@@ -1,4 +1,49 @@
-name: Establishing Stable Tunnel
+name: Windows-RDP-Ghost-Pro-Final
+on:
+  workflow_dispatch: # التشغيل يدوي لضمان الخصوصية التامة
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: 🔐 Secure Initialization
+        shell: pwsh
+        env:
+          # سحب القيم من Secrets مباشرة (هذا يضمن ظهورها كنجوم *** من أول لحظة)
+          MASTER_KEY: ${{ secrets.MY_START_KEY }}
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          # 1. التحقق من وجود المفاتيح في Secrets
+          if ([string]::IsNullOrWhiteSpace($env:MASTER_KEY)) {
+            Write-Host "❌ Error: MY_START_KEY is not set in Secrets."
+            exit 1
+          }
+
+          # 2. تعيين كلمة السر (استخدام Secret أو افتراضية قوية)
+          $finalPass = $env:RDP_PASSWORD
+          if ([string]::IsNullOrWhiteSpace($finalPass)) { 
+            $finalPass = "Ghost@Admin#2026!X" 
+          }
+
+          # 3. القنص الفوري (Masking)
+          Write-Host "::add-mask::$finalPass"
+          
+          # 4. تصدير للبيئة العالمية
+          echo "RDP_PASS=$finalPass" >> $env:GITHUB_ENV
+          Write-Host "✅ System Initialized. All sensitive data is now invisible."
+
+      - name: 🛠️ Setup Windows RDP
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          
+          $pass = $env:RDP_PASS
+          net user GhostAdmin $pass /add /Y
+          net localgroup administrators GhostAdmin /add
+          Write-Host "✅ User 'GhostAdmin' is ready."
+
+      - name: 🌐 Establish Stable Tunnel
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -6,10 +51,10 @@ name: Establishing Stable Tunnel
         run: |
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           
-          # استخدام بروتوكول quic لزيادة استقرار الرابط ومنع الخطأ 530
+          # استخدام بروتوكول quic لتجنب خطأ 530 وضمان اتصال النفق
           Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389 --protocol quic" -RedirectStandardError "log.txt"
           
-          Write-Host "Waiting for tunnel propagation..."
+          Write-Host "Establishing Tunnel Connection... (40s)"
           Start-Sleep -Seconds 40
           
           $log = Get-Content "log.txt"
@@ -19,16 +64,26 @@ name: Establishing Stable Tunnel
             $url = $raw.Matches[0].Value
             Write-Host "::add-mask::$url"
             
-            # تنبيهك في الرسالة بطريقة الاتصال
-            $message = "🚀 <b>RDP Tunnel Ready!</b>`n`n" +
-                       "🌐 <b>Hostname:</b> <code>$url</code>`n" +
+            $message = "🚀 <b>Ghost Session Active!</b>`n`n" +
+                       "🌐 <b>Host:</b> <code>$url</code>`n" +
                        "👤 <b>User:</b> <code>GhostAdmin</code>`n" +
                        "🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>`n`n" +
-                       "📢 <b>How to connect:</b>`n" +
-                       "Run this on your PC:`n" +
+                       "🔑 <b>How to Connect:</b>`n" +
+                       "Run this on your PC CMD:`n" +
                        "<code>cloudflared access rdp --hostname $url --url localhost:3333</code>"
             
             $params = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" }
             $jsonPayload = $params | ConvertTo-Json -Compress
             Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $jsonPayload
+            Write-Host "✅ Info sent to Telegram."
+          } else {
+            Write-Host "❌ Tunnel Failed. Log content:"
+            Get-Content "log.txt"
+            exit 1
           }
+
+      - name: ⏳ Persistent Session
+        shell: pwsh
+        run: |
+          Write-Host "Session is live. Use the Cloudflare client on your PC to connect."
+          for ($i=1; $i -le 360; $i++) { Start-Sleep -Seconds 60 }
