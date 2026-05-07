@@ -1,4 +1,4 @@
-name: Windows-RDP-Absolute-Fix
+name: Windows-RDP-Professional-Integrated
 on: 
   workflow_dispatch:
 
@@ -6,88 +6,82 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: 🔐 Secure Initialization
+      - name: 🔐 1. حماية وتجهيز المتغيرات
         shell: pwsh
         env:
           MASTER_KEY: ${{ secrets.MY_START_KEY }}
           RDP_PASS_SECRET: ${{ secrets.RDP_PASSWORD }}
         run: |
+          # التحقق من مفتاح التشغيل
           if ([string]::IsNullOrWhiteSpace($env:MASTER_KEY)) { 
               Write-Host "❌ Error: MASTER_KEY is missing! Set it in Secrets."
               exit 1 
           }
+          # إعداد كلمة المرور
           $pass = $env:RDP_PASS_SECRET
           if ([string]::IsNullOrWhiteSpace($pass)) { $pass = "Ghost@Admin#2026!" }
           Write-Host "::add-mask::$pass"
           echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
 
-      - name: 🛠️ RDP & NLA System Fix
+      - name: 📥 2. تحميل Cloudflared
+        run: |
+          curl -L --output cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+
+      - name: 👤 3. إنشاء المستخدم وتفعيل النظام
         shell: pwsh
         run: |
-          # إنشاء المستخدم بصلاحيات الأدمن
-          net user AdminUser "$env:RDP_PASS" /add /Y
-          net localgroup administrators AdminUser /add
+          $name = "AdminUser"
+          $pass = $env:RDP_PASS
+          net user $name $pass /add /Y
+          net localgroup administrators $name /add
           
-          # تفعيل الـ RDP في السجل (Registry)
+          # تفعيل RDP وتجاوز NLA (نفس طريقتك الناجحة)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          
-          # فتح جدار الحماية وتفعيل الخدمات الأساسية
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-Service -Name TermService -StartupType Automatic
-          Restart-Service TermService -Force
-          
-          Write-Host "✅ RDP System is configured and service restarted."
+          Write-Host "✅ تم إعداد النظام والمستخدم بنجاح!"
 
-      - name: 🌐 Launch Tunnel & Precise Extraction
+      - name: 🌐 4. تشغيل النفق وإرسال البيانات لتلجرام
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # تحميل cloudflared
-          curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+          # تشغيل النفق في الخلفية مع تسجيل المخرجات في ملف
+          Start-Process ./cloudflared.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "logs.txt"
           
-          # تشغيل النفق وتوجيهه لـ RDP
-          Start-Process ./cf.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "logs.txt"
-          
-          Write-Host "Searching for the tunnel URL..."
+          Write-Host "⏳ جاري استخراج رابط الاتصال..."
           $url = ""
-          for ($i=1; $i -le 15; $i++) {
+          for ($i=1; $i -le 10; $i++) {
               Start-Sleep -Seconds 5
               if (Test-Path "logs.txt") {
                   $content = Get-Content "logs.txt" -Raw
                   if ($content -match "https://[a-z0-9-]+.trycloudflare.com") {
-                      $all_matches = [regex]::Matches($content, "https://[a-z0-9-]+.trycloudflare.com")
-                      $url = $all_matches[$all_matches.Count - 1].Value
+                      $url = ([regex]::Matches($content, "https://[a-z0-9-]+.trycloudflare.com")[-1]).Value
                       break
                   }
               }
-              Write-Host "Attempt ${i}: URL not ready yet..."
           }
 
           if ($url) {
-            $clean_url = $url.Trim()
-            $message = "🚀 <b>RDP Connection Active!</b>`n`n" +
-                       "🌐 <b>Host:</b> <code>$clean_url</code>`n" +
-                       "👤 <b>User:</b> <code>AdminUser</code>`n" +
-                       "🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>`n`n" +
-                       "🛠️ <b>Command:</b>`n<code>cloudflared access rdp --hostname $($clean_url.Replace('https://','')) --url localhost:3333</code>"
+            $clean_host = $url.Replace("https://", "")
+            $message = "🚀 <b>RDP Connected!</b>`n`n🌐 <b>Host:</b> <code>$url</code>`n👤 <b>User:</b> <code>AdminUser</code>`n🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>`n`n🛠️ <b>Command:</b>`n<code>cloudflared access rdp --hostname $clean_host --url localhost:3333</code>"
             
+            # إرسال إلى تلجرام
             $body = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" } | ConvertTo-Json -Compress
             Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $body
-            Write-Host "✅ Info sent to Telegram."
+            Write-Host "✅ تم إرسال الرابط بنجاح: $url"
           } else {
-            Write-Host "❌ Failed to get URL. Logs:"
-            Get-Content "logs.txt"
+            Write-Host "❌ فشل استخراج الرابط."
             exit 1
           }
 
-      - name: ⏳ Keep Alive
+      - name: ⏳ 5. إبقاء الجهاز يعمل (Keep Alive)
         shell: pwsh
         run: |
-          Write-Host "RDP is Live. Keep this tab open."
-          for ($i=360; $i -gt 0; $i--) { 
-              Write-Host "Remaining time: ${i} minutes..."
-              Start-Sleep -Seconds 60 
+          $n = 360
+          while ($n -gt 0) {
+            Write-Host "السيرفر يعمل بنجاح... المتبقي: $n دقيقة"
+            Start-Sleep -Seconds 60
+            $n--
           }
