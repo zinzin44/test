@@ -1,87 +1,73 @@
-name: Windows-RDP-Professional-Integrated
-on: 
-  workflow_dispatch:
+name: 🌐 4. تشغيل النفق وإرسال البيانات لتلجرام
+  shell: pwsh
+  env:
+    TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+    TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  run: |
 
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - name: 🔐 1. حماية وتجهيز المتغيرات
-        shell: pwsh
-        env:
-          MASTER_KEY: ${{ secrets.MY_START_KEY }}
-          RDP_PASS_SECRET: ${{ secrets.RDP_PASSWORD }}
-        run: |
-          # التحقق من مفتاح التشغيل
-          if ([string]::IsNullOrWhiteSpace($env:MASTER_KEY)) { 
-              Write-Host "❌ Error: MASTER_KEY is missing! Set it in Secrets."
-              exit 1 
-          }
-          # إعداد كلمة المرور
-          $pass = $env:RDP_PASS_SECRET
-          if ([string]::IsNullOrWhiteSpace($pass)) { $pass = "Ghost@Admin#2026!" }
-          Write-Host "::add-mask::$pass"
-          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
+    Start-Process ./cloudflared.exe `
+      -ArgumentList "tunnel --url tcp://localhost:3389 --no-autoupdate" `
+      -RedirectStandardOutput "logs.txt" `
+      -RedirectStandardError "err.txt"
 
-      - name: 📥 2. تحميل Cloudflared
-        run: |
-          curl -L --output cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+    Write-Host "⏳ جاري استخراج الرابط..."
 
-      - name: 👤 3. إنشاء المستخدم وتفعيل النظام
-        shell: pwsh
-        run: |
-          $name = "AdminUser"
-          $pass = $env:RDP_PASS
-          net user $name $pass /add /Y
-          net localgroup administrators $name /add
-          
-          # تفعيل RDP وتجاوز NLA (نفس طريقتك الناجحة)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Write-Host "✅ تم إعداد النظام والمستخدم بنجاح!"
+    $url = ""
 
-      - name: 🌐 4. تشغيل النفق وإرسال البيانات لتلجرام
-        shell: pwsh
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          # تشغيل النفق في الخلفية مع تسجيل المخرجات في ملف
-          Start-Process ./cloudflared.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "logs.txt"
-          
-          Write-Host "⏳ جاري استخراج رابط الاتصال..."
-          $url = ""
-          for ($i=1; $i -le 10; $i++) {
-              Start-Sleep -Seconds 5
-              if (Test-Path "logs.txt") {
-                  $content = Get-Content "logs.txt" -Raw
-                  if ($content -match "https://[a-z0-9-]+.trycloudflare.com") {
-                      $url = ([regex]::Matches($content, "https://[a-z0-9-]+.trycloudflare.com")[-1]).Value
-                      break
-                  }
-              }
-          }
+    for ($i=1; $i -le 20; $i++) {
+        Start-Sleep -Seconds 3
 
-          if ($url) {
-            $clean_host = $url.Replace("https://", "")
-            $message = "🚀 <b>RDP Connected!</b>`n`n🌐 <b>Host:</b> <code>$url</code>`n👤 <b>User:</b> <code>AdminUser</code>`n🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>`n`n🛠️ <b>Command:</b>`n<code>cloudflared access rdp --hostname $clean_host --url localhost:3333</code>"
-            
-            # إرسال إلى تلجرام
-            $body = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" } | ConvertTo-Json -Compress
-            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $body
-            Write-Host "✅ تم إرسال الرابط بنجاح: $url"
-          } else {
-            Write-Host "❌ فشل استخراج الرابط."
-            exit 1
-          }
+        if (Test-Path "logs.txt") {
 
-      - name: ⏳ 5. إبقاء الجهاز يعمل (Keep Alive)
-        shell: pwsh
-        run: |
-          $n = 360
-          while ($n -gt 0) {
-            Write-Host "السيرفر يعمل بنجاح... المتبقي: $n دقيقة"
-            Start-Sleep -Seconds 60
-            $n--
-          }
+            $content = Get-Content "logs.txt" -Raw
+
+            if ($content -match "https://[a-zA-Z0-9-]+\.trycloudflare\.com") {
+
+                $url = $matches[0]
+                break
+            }
+        }
+    }
+
+    if ($url) {
+
+        $host = $url.Replace("https://","")
+
+        $message = @"
+🚀 RDP READY
+
+Host:
+$host
+
+User:
+AdminUser
+
+Password:
+$env:RDP_PASS
+
+Run locally:
+
+cloudflared tunnel --url tcp://localhost:3390 --hostname $host
+
+Then connect using:
+localhost:3390
+"@
+
+        $body = @{
+            chat_id = "$env:TG_CHAT_ID"
+            text = $message
+        }
+
+        Invoke-RestMethod `
+          -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" `
+          -Method Post `
+          -Body $body
+
+        Write-Host "✅ الرابط جاهز: $url"
+
+    } else {
+
+        Write-Host "❌ لم يتم العثور على الرابط"
+        Get-Content err.txt
+        exit 1
+    }
