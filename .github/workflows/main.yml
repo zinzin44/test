@@ -1,34 +1,4 @@
-name: Windows-RDP-Absolute-Fix
-on: workflow_dispatch
-
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-      - name: 🔐 Secure Initialization
-        shell: pwsh
-        env:
-          MASTER_KEY: ${{ secrets.MY_START_KEY }}
-          RDP_PASS_SECRET: ${{ secrets.RDP_PASSWORD }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:MASTER_KEY)) { exit 1 }
-          $pass = $env:RDP_PASS_SECRET
-          if ([string]::IsNullOrWhiteSpace($pass)) { $pass = "Ghost@Admin#2026!" }
-          Write-Host "::add-mask::$pass"
-          echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
-
-      - name: 🛠️ RDP & NLA System Fix
-        shell: pwsh
-        run: |
-          # إنشاء المستخدم وتفعيل الصلاحيات
-          net user AdminUser $env:RDP_PASS /add /Y
-          net localgroup administrators AdminUser /add
-          # تفعيل RDP وإلغاء NLA (ضروري جداً لعمل الرابط)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-
-      - name: 🌐 Launch Tunnel & Precise Extraction
+- name: 🌐 Launch Tunnel & Precise Extraction
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -36,33 +6,28 @@ jobs:
         run: |
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           
-          # تشغيل النفق وحفظ السجلات في ملف واحد
+          # تشغيل النفق وحفظ السجلات
           Start-Process ./cf.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "logs.txt"
           
           Write-Host "Searching for the correct tunnel URL..."
           $url = ""
           
-          # حلقة بحث ذكية لمدة 60 ثانية
           for ($i=1; $i -le 12; $i++) {
               Start-Sleep -Seconds 5
               if (Test-Path "logs.txt") {
                   $content = Get-Content "logs.txt" -Raw
-                  # التعبير النمطي (Regex) يبحث فقط عن روابط trycloudflare التي تتبعها كلمة 'inf' أو مسبوقة بـ 'Your quick tunnel'
                   if ($content -match "https://[a-z0-9-]+.trycloudflare.com") {
                       $all_matches = [regex]::Matches($content, "https://[a-z0-9-]+.trycloudflare.com")
-                      # نأخذ آخر رابط تم إنشاؤه لأنه الأحدث والأصح
                       $url = $all_matches[$all_matches.Count - 1].Value
                       break
                   }
               }
-              Write-Host "Attempt $i: URL not ready yet..."
+              # التصحيح هنا: استخدام {i} لمنع تداخل الـ Variable Scope
+              Write-Host "Attempt ${i}: URL not ready yet..."
           }
 
           if ($url) {
-            Write-Host "::add-mask::$url"
-            # تنظيف الرابط من أي حروف زائدة
             $clean_url = $url.Trim()
-            
             $message = "🚀 <b>RDP Connection Active!</b>`n`n" +
                        "🌐 <b>Host:</b> <code>$clean_url</code>`n" +
                        "👤 <b>User:</b> <code>AdminUser</code>`n" +
@@ -73,11 +38,7 @@ jobs:
             Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $body
             Write-Host "✅ Correct URL sent to Telegram."
           } else {
-            Write-Host "❌ Failed to extract URL. Dumping logs for debug:"
-            Get-Content "logs.txt"
+            Write-Host "❌ Failed to extract URL."
+            if (Test-Path "logs.txt") { Get-Content "logs.txt" }
             exit 1
           }
-
-      - name: ⏳ Keep Alive
-        run: |
-          for ($i=360; $i -gt 0; $i--) { Start-Sleep -Seconds 60 }
