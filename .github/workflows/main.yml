@@ -1,4 +1,4 @@
-- name: 🌐 Launch Tunnel & Precise Extraction
+name: 🌐 Launch Tunnel & Precise Extraction
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
