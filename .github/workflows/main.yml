@@ -1,4 +1,4 @@
-name: Windows-RDP-Ghost-Extreme-v4
+name: Windows-RDP-Safe-Shield
 on:
   workflow_dispatch:
     inputs:
@@ -13,68 +13,86 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Decode and Auth
+      - name: Security Check & Decode
         shell: pwsh
+        env:
+          START_KEY: ${{ secrets.MY_START_KEY }}
         run: |
           function Decode-Quad ($s) {
             $curr = $s.Trim()
-            for ($i=0; $i -lt 4; $i++) { $curr = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($curr)).Trim() }
+            for ($i=0; $i -lt 4; $i++) { 
+                $curr = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($curr)).Trim() 
+            }
             return $curr
           }
+
           $k = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
-          if ($k -eq "${{ secrets.MY_START_KEY }}") {
+          
+          if ($k -eq $env:START_KEY) {
             $p = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
-            # تخزين كلمة السر في بيئة العمل بشكل صحيح
+            # إخفاء كلمة السر فوراً من أي ظهور في السجلات
+            Write-Host "::add-mask::$p"
             echo "RDP_PASS=$p" >> $env:GITHUB_ENV
-            Write-Host "✅ Key Verified"
-          } else { 
-            Write-Host "❌ Invalid Key"
-            exit 1 
+            Write-Host "✅ Authentication Successful."
+          } else {
+            Write-Host "❌ Critical Error: Identity Verification Failed."
+            exit 1
           }
 
-      - name: Setup RDP and User
+      - name: Setup RDP Environment
         shell: pwsh
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          # استخدام المتغير من البيئة مباشرة
           $pass = $env:RDP_PASS
           net user GhostAdmin $pass /add
           net localgroup administrators GhostAdmin /add
+          Write-Host "✅ System environment prepared."
 
-      - name: Start Tunnel (TCP Mode)
+      - name: Launch Secure Tunnel
         shell: pwsh
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
+          # تحميل Cloudflared
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           
-          # تشغيل النفق بنمط TCP صريح لضمان المصافحة الصحيحة
+          # تشغيل النفق
           Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "log.txt"
+          Write-Host "Waiting for tunnel to sync..."
+          Start-Sleep -Seconds 20
           
-          Write-Host "Waiting for tunnel to initialize..."
-          Start-Sleep -Seconds 15
-          
+          # استخراج الرابط
           $log = Get-Content "log.txt"
-          $raw = $log | Select-String "https://[a-z0-9-]+\.trycloudflare\.com"
+          $raw = $log | Select-String "https://[a-z0-9-]+.trycloudflare.com"
           
           if ($raw) {
             $url = $raw.Matches[0].Value
-            $enc = $url
-            # التشفير الرباعي
-            for ($i=0; $i -lt 4; $i++) { 
-                $enc = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($enc)) 
-            }
-            Write-Host "----------------------------------------------"
-            Write-Host "✅ ENCODED URL (4x):"
-            Write-Host $enc -ForegroundColor Yellow
-            Write-Host "----------------------------------------------"
+            Write-Host "::add-mask::$url" # إخفاء الرابط من السجل
+
+            # إرسال البيانات إلى تليجرام
+            $message = "🚀 *New RDP Session Ready!*`n`n" +
+                       "🌐 *URL:* ``$url``" + "`n" +
+                       "👤 *User:* ``GhostAdmin``" + "`n" +
+                       "🔑 *Pass:* ``$env:RDP_PASS``"
+            
+            $tgUrl = "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage"
+            $body = @{ chat_id = $env:TG_CHAT_ID; text = $message; parse_mode = "MarkdownV2" }
+            Invoke-RestMethod -Uri $tgUrl -Method Post -Body $body
+            
+            Write-Host "----------------------------------------------------"
+            Write-Host "✅ ALL DONE! Check your Telegram for connection info."
+            Write-Host "----------------------------------------------------"
           } else {
-            Write-Host "❌ Failed to get tunnel URL. Log content:"
-            Get-Content "log.txt"
+            Write-Host "❌ Failed to generate tunnel. Check cloudflared status."
             exit 1
           }
-          
-          # إبقاء المهمة تعمل لمدة 6 ساعات
+
+      - name: Keep Alive
+        shell: pwsh
+        run: |
+          Write-Host "Server is active. Tunneling data to your Telegram..."
           for ($i=0; $i -lt 360; $i++) {
-            Write-Host "Server is running... Minute: $i"
             Start-Sleep -Seconds 60
           }
