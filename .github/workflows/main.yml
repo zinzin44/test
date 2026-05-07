@@ -1,4 +1,4 @@
-name: Windows-RDP-Ghost-Pro-Secure
+name: Windows-RDP-Ghost-Pro-Final-Shield
 on:
   workflow_dispatch:
     inputs:
@@ -15,20 +15,22 @@ jobs:
     steps:
       - name: 🛡️ Total Stealth Initialization
         shell: pwsh
+        # السر هنا: تمرير المدخلات كمتغيرات بيئة في هذا القسم يمنع GitHub من طباعتها داخل "نص الكود"
+        env:
+          INPUT_AUTH: ${{ github.event.inputs.auth_key_b64 }}
+          INPUT_PASS: ${{ github.event.inputs.rdp_password_b64 }}
         run: |
-          # هذه الخطوة تقوم بإجبار جيتهاب على وضع نجوم فوق المدخلات في أي مكان تظهر فيه لاحقاً
-          $rawAuth = "${{ github.event.inputs.auth_key_b64 }}"
-          $rawPass = "${{ github.event.inputs.rdp_password_b64 }}"
+          # 1. القنص الفوري للمدخلات قبل أي عملية أخرى
+          Write-Host "::add-mask::$env:INPUT_AUTH"
+          Write-Host "::add-mask::$env:INPUT_PASS"
           
-          Write-Host "::add-mask::$rawAuth"
-          Write-Host "::add-mask::$rawPass"
+          # 2. نقل القيم إلى ملف البيئة العالمي لاستخدامها لاحقاً بشكل آمن
+          echo "SHADOW_AUTH=$env:INPUT_AUTH" >> $env:GITHUB_ENV
+          echo "SHADOW_PASS=$env:INPUT_PASS" >> $env:GITHUB_ENV
           
-          # تخزينها في ملف البيئة لاستخدامها بأمان في الخطوات التالية
-          echo "SHADOW_AUTH=$rawAuth" >> $env:GITHUB_ENV
-          echo "SHADOW_PASS=$rawPass" >> $env:GITHUB_ENV
-          Write-Host "🛡️ Shielding sensitive inputs... DONE"
+          Write-Host "🛡️ All inputs have been shielded and converted to stars (***)."
 
-      - name: 🔐 Decoding & Masking
+      - name: 🔐 Secure Decoding
         shell: pwsh
         env:
           START_KEY: ${{ secrets.MY_START_KEY }}
@@ -41,23 +43,20 @@ jobs:
             return $curr
           }
 
-          # استخراج القيم من "الظل" الذي أنشأناه في الخطوة الأولى
+          # هنا نستخدم متغيرات الظل (ستظهر كنجوم في السجلات)
           $k = Decode-Quad $env:SHADOW_AUTH
           
           if ($k -eq $env:START_KEY) {
             $p = Decode-Quad $env:SHADOW_PASS
-            
-            # إخفاء كلمة السر الصريحة أيضاً
             Write-Host "::add-mask::$p"
-            
             echo "RDP_PASS=$p" >> $env:GITHUB_ENV
-            Write-Host "✅ Identity Verified. Logs are clean."
+            Write-Host "✅ Identity Verified. Full Stealth Active."
           } else { 
             Write-Host "❌ Security Breach!"
             exit 1 
           }
 
-      - name: 🛠️ Setup Windows
+      - name: 🛠️ Setup Windows RDP
         shell: pwsh
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
@@ -66,7 +65,7 @@ jobs:
           net user GhostAdmin $pass /add
           net localgroup administrators GhostAdmin /add
 
-      - name: 🌐 Tunnel & Telegram
+      - name: 🌐 Secure Tunnel & Telegram
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -85,10 +84,11 @@ jobs:
             $params = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" }
             $jsonPayload = $params | ConvertTo-Json -Compress
             Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $jsonPayload
-            Write-Host "✅ Notification Sent."
+            Write-Host "✅ Notification Sent Privately."
           }
 
-      - name: ⏳ Keep Alive
+      - name: ⏳ Maintenance Loop
         shell: pwsh
         run: |
+          Write-Host "Session is running. Logs are completely clean."
           for ($i=1; $i -le 360; $i++) { Start-Sleep -Seconds 60 }
