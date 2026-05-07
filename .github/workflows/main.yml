@@ -1,4 +1,4 @@
-- name: 🌐 Establishing Stable Tunnel
+name: 🌐 Establishing Stable Tunnel
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
