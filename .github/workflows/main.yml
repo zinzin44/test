@@ -1,4 +1,4 @@
-name: Windows-RDP-Ghost-Extreme-v4-Secure
+name: Windows-RDP-Safe-Shield-Final
 on:
   workflow_dispatch:
     inputs:
@@ -13,7 +13,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: 🔐 Decode and Masking
+      - name: 🔐 Security Handshake & Masking
         shell: pwsh
         env:
           START_KEY: ${{ secrets.MY_START_KEY }}
@@ -26,49 +26,47 @@ jobs:
             return $curr
           }
 
-          # فك تشفير المفتاح وكلمة المرور
+          # فك تشفير المفتاح السري وكلمة المرور
           $k = Decode-Quad "${{ github.event.inputs.auth_key_b64 }}"
           
           if ($k -eq $env:START_KEY) {
             $p = Decode-Quad "${{ github.event.inputs.rdp_password_b64 }}"
             
-            # أمر سحري: إخفاء كلمة السر من سجلات GitHub تماماً
+            # منع ظهور كلمة السر في السجلات (Masking)
             Write-Host "::add-mask::$p"
             
-            # حفظ كلمة السر في بيئة العمل لاستخدامها في الخطوات القادمة
+            # تخزينها في بيئة العمل لاستخدامها لاحقاً
             echo "RDP_PASS=$p" >> $env:GITHUB_ENV
-            Write-Host "✅ Key Verified. Sensitive data is now masked."
+            Write-Host "✅ Authentication Successful. Sensitive data masked."
           } else { 
-            Write-Host "❌ Invalid Key. Security Termination."
+            Write-Host "❌ Security Breach: Invalid Key."
             exit 1 
           }
 
-      - name: 🛠️ Setup Windows RDP
+      - name: 🛠️ Configure Windows RDP
         shell: pwsh
         run: |
-          # تفعيل سطح المكتب البعيد
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           
-          # إنشاء المستخدم بصلاحيات الأدمن
           $pass = $env:RDP_PASS
           net user GhostAdmin $pass /add
           net localgroup administrators GhostAdmin /add
-          Write-Host "✅ User 'GhostAdmin' created successfully."
+          Write-Host "✅ RDP and User 'GhostAdmin' are ready."
 
-      - name: 🌐 Start Tunnel & Notify Telegram
+      - name: 🌐 Secure Tunnel & Telegram Notification
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # تحميل أداة Cloudflared
+          # تحميل أداة التفق (Tunnel)
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           
-          # تشغيل النفق وتحويل الأخطاء لملف نصي لاستخراج الرابط
+          # تشغيل النفق
           Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "log.txt"
           
-          Write-Host "Waiting for tunnel to initialize (20s)..."
+          Write-Host "Initializing secure tunnel... (20s)"
           Start-Sleep -Seconds 20
           
           $log = Get-Content "log.txt"
@@ -76,10 +74,10 @@ jobs:
           
           if ($raw) {
             $url = $raw.Matches[0].Value
-            # إخفاء الرابط من السجلات لزيادة الأمان
+            # إخفاء الرابط من السجل لزيادة الأمان
             Write-Host "::add-mask::$url"
 
-            # تجهيز رسالة التليجرام بتنسيق HTML
+            # تحضير رسالة التليجرام بتنسيق HTML الآمن
             $message = "🚀 <b>New RDP Session Ready!</b>`n`n" +
                        "🌐 <b>URL:</b> <code>$url</code>`n" +
                        "👤 <b>User:</b> <code>GhostAdmin</code>`n" +
@@ -87,29 +85,33 @@ jobs:
             
             $tgUrl = "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage"
             
-            # إرسال البيانات كـ JSON لضمان عدم حدوث أخطاء في الرموز الخاصة
+            # إرسال البيانات باستخدام JSON لضمان قبول الـ Chat ID والأرقام الكبيرة
             $params = @{
-                chat_id = $env:TG_CHAT_ID
+                chat_id = [string]$env:TG_CHAT_ID
                 text = $message
                 parse_mode = "HTML"
             }
             $jsonPayload = $params | ConvertTo-Json -Compress
             
-            Invoke-RestMethod -Uri $tgUrl -Method Post -ContentType "application/json; charset=utf-8" -Body $jsonPayload
-            
-            Write-Host "----------------------------------------------"
-            Write-Host "✅ SUCCESS: Connection info sent to Telegram."
-            Write-Host "----------------------------------------------"
+            try {
+                Invoke-RestMethod -Uri $tgUrl -Method Post -ContentType "application/json; charset=utf-8" -Body $jsonPayload
+                Write-Host "----------------------------------------------"
+                Write-Host "✅ SUCCESS: Credentials sent to your Telegram."
+                Write-Host "----------------------------------------------"
+            } catch {
+                Write-Host "❌ Telegram Error: $($_.Exception.Message)"
+                exit 1
+            }
           } else {
-            Write-Host "❌ Failed to get tunnel URL. Tunnel might have crashed."
+            Write-Host "❌ Failed to generate tunnel. Log content:"
+            Get-Content "log.txt"
             exit 1
           }
 
-      - name: ⏳ Keep Alive (6 Hours)
+      - name: ⏳ Maintenance Loop (6 Hours)
         shell: pwsh
         run: |
-          Write-Host "Server is running... You can connect now."
+          Write-Host "Session is active. Monitor your Telegram for connection updates."
           for ($i=1; $i -le 360; $i++) {
-            Write-Host "Active Session... Minute: $i"
             Start-Sleep -Seconds 60
           }
