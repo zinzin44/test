@@ -1,87 +1,78 @@
-name: Windows-RDP-Final-Fix-Secure
+name: Windows-RDP-Final-Shield-V3
 on: workflow_dispatch
 
 jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: 🔐 تهيئة وتأمين الهوية
+      - name: 🔐 Secure Masking
         shell: pwsh
         env:
-          # سحب البيانات من الأسرار (Secrets)
           MASTER_KEY: ${{ secrets.MY_START_KEY }}
           RDP_PASS_SECRET: ${{ secrets.RDP_PASSWORD }}
         run: |
-          # التحقق من وجود مفتاح التشغيل
-          if ([string]::IsNullOrWhiteSpace($env:MASTER_KEY)) {
-            Write-Host "❌ Error: MY_START_KEY is missing." ; exit 1
-          }
-          
-          # تعيين كلمة السر (استخدام السكرت أو افتراضية قوية)
+          if ([string]::IsNullOrWhiteSpace($env:MASTER_KEY)) { exit 1 }
           $pass = $env:RDP_PASS_SECRET
           if ([string]::IsNullOrWhiteSpace($pass)) { $pass = "Ghost@Admin#2026!" }
-          
-          # إخفاء كلمة السر فوراً عن السجلات
           Write-Host "::add-mask::$pass"
           echo "RDP_PASS=$pass" >> $env:GITHUB_ENV
-          Write-Host "✅ تم تأمين كلمة السر بنجاح."
 
-      - name: 🛠️ إعداد المستخدم وتفعيل RDP
+      - name: 🛠️ RDP & User Setup
         shell: pwsh
         run: |
-          # إنشاء المستخدم بصلاحيات الأدمن
           $name = "AdminUser"
-          $pass = $env:RDP_PASS
-          net user $name $pass /add /Y
+          net user $name $env:RDP_PASS /add /Y
           net localgroup administrators $name /add
-          
-          # تفعيل RDP وتجاوز مشكلة الهوية (حل مشكلة الاتصال)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          # السطر السحري لحل مشكلة الرفض
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-          Write-Host "✅ تم إعداد النظام وتجاوز NLA."
 
-      - name: 🌐 تشغيل النفق وإرسال الرابط (Telegram)
+      - name: 🌐 Launch Tunnel & Smart Extract
         shell: pwsh
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          # تحميل Cloudflared
+          # 1. تحميل الأداة
           curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
           
-          # تشغيل النفق (بنمط rdp المضمون في كودك)
-          Start-Process ./cf.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "log.txt"
+          # 2. تشغيل النفق وتوجيه السجلات لملف نصي
+          # استخدمنا rdp:// لضمان توافق البروتوكول
+          Start-Process ./cf.exe -ArgumentList "tunnel --url rdp://localhost:3389" -RedirectStandardError "out.log"
           
-          Write-Host "انتظار 25 ثانية لاستقرار الرابط..."
-          Start-Sleep -Seconds 25
+          Write-Host "Waiting for Cloudflare to generate URL..."
           
-          $log = Get-Content "log.txt"
-          $raw = $log | Select-String "https://[a-z0-9-]+.trycloudflare.com"
-          
-          if ($raw) {
-            $url = $raw.Matches[0].Value
-            Write-Host "::add-mask::$url" # إخفاء الرابط من السجل
+          # 3. محاولة استخراج الرابط بذكاء (تكرار البحث كل 5 ثوانٍ حتى يظهر)
+          $url = ""
+          for ($i=0; $i -lt 12; $i++) {
+              Start-Sleep -Seconds 5
+              $log = Get-Content "out.log" -Raw
+              if ($log -match "https://[a-z0-9-]+.trycloudflare.com") {
+                  $url = $matches[0]
+                  break
+              }
+              Write-Host "Still waiting... ($($i*5)s)"
+          }
+
+          if ($url) {
+            Write-Host "::add-mask::$url"
             
-            $message = "🚀 <b>RDP Connection Ready!</b>`n`n" +
+            # 4. إرسال البيانات لتليجرام
+            $message = "🚀 <b>RDP Connection Fixed!</b>`n`n" +
                        "🌐 <b>Host:</b> <code>$url</code>`n" +
                        "👤 <b>User:</b> <code>AdminUser</code>`n" +
                        "🔑 <b>Pass:</b> <code>$env:RDP_PASS</code>"
             
-            $params = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" }
-            $json = $params | ConvertTo-Json -Compress
-            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $json
-            Write-Host "✅ أُرسل الرابط بنجاح إلى تليجرام."
+            $body = @{ chat_id = [string]$env:TG_CHAT_ID; text = $message; parse_mode = "HTML" } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" -Method Post -ContentType "application/json" -Body $body
+            
+            Write-Host "✅ Success! Link sent to Telegram."
           } else {
-            Write-Host "❌ فشل في استخراج الرابط." ; exit 1
+            Write-Host "❌ Failed to capture URL. Full Log below:"
+            Get-Content "out.log"
+            exit 1
           }
 
-      - name: ⏳ إبقاء الجلسة نشطة (6 ساعات)
+      - name: ⏳ Persistent Session
         run: |
-          $n = 360
-          while ($n -gt 0) {
-            Write-Host "السيرفر يعمل... المتبقي: $n دقيقة"
-            Start-Sleep -Seconds 60
-            $n--
-          }
+          for ($i=360; $i -gt 0; $i--) { Write-Host "Active: $i min" ; Start-Sleep -Seconds 60 }
