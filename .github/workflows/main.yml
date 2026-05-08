@@ -1,73 +1,67 @@
-name: 🌐 4. تشغيل النفق وإرسال البيانات لتلجرام
-  shell: pwsh
-  env:
-    TG_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-    TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-  run: |
+name: Windows-RDP-Ghost-Extreme-v4
+on:
+  workflow_dispatch:
+    inputs:
+      auth_key:
+        description: 'Enter Authorization Key'
+        required: false
 
-    Start-Process ./cloudflared.exe `
-      -ArgumentList "tunnel --url tcp://localhost:3389 --no-autoupdate" `
-      -RedirectStandardOutput "logs.txt" `
-      -RedirectStandardError "err.txt"
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Verify Key and Setup Environment
+        shell: pwsh
+        run: |
+          # التحقق من المفتاح المدخل مقارنة بالسكرت المخزن
+          if ("${{ github.event.inputs.auth_key }}" -eq "${{ secrets.MY_START_KEY }}") {
+            Write-Host "✅ Key Verified Successfully."
+            # إضافة كلمة السر لبيئة العمل من الـ Secrets مباشرة
+            # ملاحظة: GitHub سيقوم بإخفائها تلقائياً في الـ Logs
+            echo "RDP_PASS=${{ secrets.RDP_PASSWORD }}" >> $env:GITHUB_ENV
+          } else {
+            Write-Host "❌ Invalid Key. Access Denied."
+            exit 1
+          }
 
-    Write-Host "⏳ جاري استخراج الرابط..."
+      - name: Setup RDP and User
+        shell: pwsh
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          
+          # استدعاء كلمة السر من بيئة العمل
+          $pass = $env:RDP_PASS
+          net user GhostAdmin $pass /add
+          net localgroup administrators GhostAdmin /add
 
-    $url = ""
-
-    for ($i=1; $i -le 20; $i++) {
-        Start-Sleep -Seconds 3
-
-        if (Test-Path "logs.txt") {
-
-            $content = Get-Content "logs.txt" -Raw
-
-            if ($content -match "https://[a-zA-Z0-9-]+\.trycloudflare\.com") {
-
-                $url = $matches[0]
-                break
-            }
-        }
-    }
-
-    if ($url) {
-
-        $host = $url.Replace("https://","")
-
-        $message = @"
-🚀 RDP READY
-
-Host:
-$host
-
-User:
-AdminUser
-
-Password:
-$env:RDP_PASS
-
-Run locally:
-
-cloudflared tunnel --url tcp://localhost:3390 --hostname $host
-
-Then connect using:
-localhost:3390
-"@
-
-        $body = @{
-            chat_id = "$env:TG_CHAT_ID"
-            text = $message
-        }
-
-        Invoke-RestMethod `
-          -Uri "https://api.telegram.org/bot$env:TG_TOKEN/sendMessage" `
-          -Method Post `
-          -Body $body
-
-        Write-Host "✅ الرابط جاهز: $url"
-
-    } else {
-
-        Write-Host "❌ لم يتم العثور على الرابط"
-        Get-Content err.txt
-        exit 1
-    }
+      - name: Start Tunnel (TCP Mode)
+        shell: pwsh
+        run: |
+          curl -L --output cf.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
+          
+          # تشغيل النفق
+          Start-Process ./cf.exe -ArgumentList "tunnel --url tcp://localhost:3389" -RedirectStandardError "log.txt"
+          
+          Write-Host "Waiting for tunnel to initialize..."
+          Start-Sleep -Seconds 15
+          
+          $log = Get-Content "log.txt"
+          $raw = $log | Select-String "https://[a-z0-9-]+.trycloudflare.com"
+          
+          if ($raw) {
+            $url = $raw.Matches[0].Value
+            Write-Host "----------------------------------------------"
+            Write-Host "✅ RDP ADDRESS:"
+            Write-Host $url -ForegroundColor Yellow
+            Write-Host "----------------------------------------------"
+          } else {
+            Write-Host "❌ Failed to get tunnel URL."
+            exit 1
+          }
+          
+          # إبقاء المهمة تعمل (تم تقليل الـ Logs لتجنب كشف أي معلومات)
+          for ($i=1; $i -le 360; $i++) {
+            Write-Host "Server Heartbeat... Minute: $i"
+            Start-Sleep -Seconds 60
+          }
