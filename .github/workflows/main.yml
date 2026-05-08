@@ -4,7 +4,7 @@ on:
     inputs:
       auth_key:
         description: 'Enter Authorization Key'
-        required: false
+        required: true
 
 jobs:
   build:
